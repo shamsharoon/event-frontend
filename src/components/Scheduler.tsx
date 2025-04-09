@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "./ui/button";
 import {
   Card,
@@ -10,15 +10,7 @@ import {
 } from "./ui/card";
 import { Alert, AlertTitle, AlertDescription } from "./ui/alert";
 import { Skeleton } from "./ui/skeleton";
-import {
-  Clock,
-  Calendar as CalendarIcon,
-  LogIn,
-  LogOut,
-  ChevronDown,
-  ChevronRight,
-  X,
-} from "lucide-react";
+import { Clock, Calendar as CalendarIcon, LogIn, LogOut } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -131,13 +123,6 @@ export default function Scheduler() {
     });
 
     return dates;
-  };
-
-  const toggleDayExpansion = (dateKey: string): void => {
-    setExpandedDays((prev) => ({
-      ...prev,
-      [dateKey]: !prev[dateKey],
-    }));
   };
 
   const connectWithGoogle = (): void => {
@@ -378,7 +363,7 @@ export default function Scheduler() {
   return (
     <div className="container mx-auto max-w-4xl p-4">
       <Card className="w-full">
-        <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b">
+        <CardHeader className="">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 w-full">
             <div>
               <CardTitle className="text-3xl font-bold text-blue-900">
