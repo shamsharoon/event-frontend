@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Button } from "./ui/button";
 import {
   Card,
@@ -10,7 +10,14 @@ import {
 } from "./ui/card";
 import { Alert, AlertTitle, AlertDescription } from "./ui/alert";
 import { Skeleton } from "./ui/skeleton";
-import { Clock, Calendar as CalendarIcon, LogIn, LogOut } from "lucide-react";
+import {
+  Clock,
+  Calendar as CalendarIcon,
+  LogIn,
+  LogOut,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -21,6 +28,8 @@ import {
 } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { Textarea } from "./ui/textarea";
+import { cn } from "../lib/utils"; // Make sure this import works
 
 interface ScheduleData {
   available_slots: string[];
@@ -28,24 +37,33 @@ interface ScheduleData {
   note?: string;
 }
 
+// Add interface for API response when scheduling an event
+interface ScheduleEventResponse {
+  status: string;
+  event_id: string;
+}
+
 export default function Scheduler() {
   const [data, setData] = useState<ScheduleData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(true);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [showScheduleDialog, setShowScheduleDialog] = useState(false);
-  const [eventName, setEventName] = useState("");
-  const [eventDescription, setEventDescription] = useState("");
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [showScheduleDialog, setShowScheduleDialog] = useState<boolean>(false);
+  const [eventName, setEventName] = useState<string>("");
+  const [eventDescription, setEventDescription] = useState<string>("");
+  const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
+  // Fix the type for contentRefs
+  const contentRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // Convert UTC ISO string to local date object
-  const parseUtcToLocalDate = (isoString: string) => {
+  const parseUtcToLocalDate = (isoString: string): Date => {
     const date = new Date(isoString);
     return date;
   };
 
   // Format a date for display, properly handling timezone
-  const formatDate = (dateString: string) => {
+  const formatDate = (dateString: string): string => {
     const date = parseUtcToLocalDate(dateString);
     return date.toLocaleString("en-US", {
       weekday: "short",
@@ -57,14 +75,13 @@ export default function Scheduler() {
   };
 
   // Group slots by date considering local timezone
-  const groupSlotsByDate = () => {
+  const groupSlotsByDate = (): Record<string, string[]> => {
     if (!data?.available_slots) return {};
 
     const grouped: Record<string, string[]> = {};
 
     data.available_slots.forEach((slot) => {
       const date = parseUtcToLocalDate(slot);
-      // Use local date for grouping
       const dateKey = date.toLocaleDateString("en-US", {
         year: "numeric",
         month: "2-digit",
@@ -81,8 +98,15 @@ export default function Scheduler() {
     return grouped;
   };
 
-  const connectWithGoogle = () => {
-    // Open in a new popup window
+  // Toggle day expansion
+  const toggleDayExpansion = (dateKey: string): void => {
+    setExpandedDays((prev) => ({
+      ...prev,
+      [dateKey]: !prev[dateKey],
+    }));
+  };
+
+  const connectWithGoogle = (): void => {
     const width = 600;
     const height = 700;
     const left = window.innerWidth / 2 - width / 2;
@@ -93,12 +117,9 @@ export default function Scheduler() {
       "googleAuth",
       `width=${width},height=${height},top=${top},left=${left}`
     );
-
-    // Alternative if popup is blocked
-    // window.location.href = "http://localhost:8000/auth";
   };
 
-  const logoutFromGoogle = async () => {
+  const logoutFromGoogle = async (): Promise<void> => {
     try {
       const response = await fetch("http://localhost:8000/auth/logout", {
         method: "GET",
@@ -107,7 +128,7 @@ export default function Scheduler() {
 
       if (response.ok) {
         setIsAuthenticated(false);
-        // Refresh with mock data after logout
+        setSelectedSlot(null);
         fetchData();
       }
     } catch (error) {
@@ -115,27 +136,27 @@ export default function Scheduler() {
     }
   };
 
-  const checkAuthStatus = async () => {
+  const checkAuthStatus = async (): Promise<void> => {
     try {
       const response = await fetch("http://localhost:8000/auth/status", {
         credentials: "include",
       });
 
       if (response.ok) {
-        const data = await response.json();
-        setIsAuthenticated(data.authenticated);
+        const responseData = await response.json();
+        setIsAuthenticated(responseData.authenticated);
       }
     } catch (error) {
       console.error("Error checking authentication status:", error);
     }
   };
 
-  const fetchData = () => {
+  const fetchData = (): void => {
     setLoading(true);
     setError(null);
 
     fetch("http://localhost:8000/schedule", {
-      credentials: "include", // Important for sending cookies if using session auth
+      credentials: "include",
     })
       .then((res) => {
         if (!res.ok) {
@@ -143,11 +164,11 @@ export default function Scheduler() {
         }
         return res.json();
       })
-      .then((data) => {
-        setData(data);
+      .then((responseData: ScheduleData) => {
+        setData(responseData);
         setLoading(false);
       })
-      .catch((err) => {
+      .catch((err: Error) => {
         console.error("Error fetching schedule data:", err);
         setError("Failed to load schedule data. Please try again later.");
         setLoading(false);
@@ -158,8 +179,7 @@ export default function Scheduler() {
     checkAuthStatus();
     fetchData();
 
-    // Set up window message listener for auth popup communication
-    const handleMessage = (event: MessageEvent) => {
+    const handleMessage = (event: MessageEvent): void => {
       if (event.data === "google-auth-success") {
         checkAuthStatus();
         fetchData();
@@ -170,11 +190,30 @@ export default function Scheduler() {
     return () => window.removeEventListener("message", handleMessage);
   }, []);
 
-  const handleSlotSelect = (slot: string) => {
+  // Initialize expanded state for the first day when data loads
+  useEffect(() => {
+    if (data?.available_slots?.length) {
+      const grouped = groupSlotsByDate();
+      const firstDay = Object.keys(grouped)[0];
+
+      if (firstDay) {
+        setExpandedDays((prev) => ({
+          ...prev,
+          [firstDay]: true,
+        }));
+      }
+    }
+  }, [data?.available_slots]);
+
+  const handleSlotSelect = (slot: string): void => {
     setSelectedSlot(slot);
+
+    if (isAuthenticated) {
+      setShowScheduleDialog(true);
+    }
   };
 
-  const openScheduleDialog = () => {
+  const openScheduleDialog = (): void => {
     if (!isAuthenticated) {
       connectWithGoogle();
       return;
@@ -183,11 +222,10 @@ export default function Scheduler() {
     setShowScheduleDialog(true);
   };
 
-  const scheduleEvent = async () => {
+  const scheduleEvent = async (): Promise<void> => {
     if (!selectedSlot) return;
 
     try {
-      // Keep the time in UTC format for the API
       const response = await fetch("http://localhost:8000/schedule/create", {
         method: "POST",
         credentials: "include",
@@ -195,7 +233,7 @@ export default function Scheduler() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          start_time: selectedSlot, // This is already in ISO format with timezone
+          start_time: selectedSlot,
           summary: eventName,
           description: eventDescription,
         }),
@@ -205,13 +243,12 @@ export default function Scheduler() {
         throw new Error("Failed to schedule event");
       }
 
-      const result = await response.json();
+      const result: ScheduleEventResponse = await response.json();
       alert("Event scheduled successfully!");
       setShowScheduleDialog(false);
       setSelectedSlot(null);
       setEventName("");
       setEventDescription("");
-      // Refresh the schedule to show updated availability
       fetchData();
     } catch (error) {
       console.error("Error scheduling event:", error);
@@ -222,133 +259,251 @@ export default function Scheduler() {
   const groupedSlots = groupSlotsByDate();
 
   return (
-    <Card className="w-full max-w-4xl">
-      <CardHeader>
-        <CardTitle className="text-2xl flex items-center justify-between">
-          AI Event Scheduler
-          {!isAuthenticated ? (
-            <Button
-              onClick={connectWithGoogle}
-              size="sm"
-              className="flex items-center"
-            >
-              <LogIn className="mr-2 h-4 w-4" />
-              Connect Calendar
-            </Button>
-          ) : (
-            <Button
-              onClick={logoutFromGoogle}
-              size="sm"
-              variant="outline"
-              className="flex items-center"
-            >
-              <LogOut className="mr-2 h-4 w-4" />
-              Log Out
-            </Button>
-          )}
-        </CardTitle>
-        <CardDescription>
-          Available time slots and AI-powered recommendations
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <div className="space-y-3">
-            <Skeleton className="h-5 w-full" />
-            <Skeleton className="h-32 w-full" />
-            <Skeleton className="h-5 w-3/4" />
-            <Skeleton className="h-24 w-full" />
+    <div className="container mx-auto max-w-4xl p-4">
+      <Card className="w-full">
+        <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 w-full">
+            <div>
+              <CardTitle className="text-3xl font-bold text-blue-900">
+                Calendar Scheduler
+              </CardTitle>
+              <CardDescription className="text-lg text-blue-700 mt-1">
+                Find and schedule optimal meeting times
+              </CardDescription>
+            </div>
+            <div>
+              {!isAuthenticated ? (
+                <Button
+                  onClick={connectWithGoogle}
+                  size="lg"
+                  className="w-full sm:w-auto flex items-center bg-blue-600 hover:bg-blue-700"
+                >
+                  <LogIn className="mr-2 h-5 w-5" />
+                  Connect Calendar
+                </Button>
+              ) : (
+                <Button
+                  onClick={logoutFromGoogle}
+                  size="lg"
+                  variant="outline"
+                  className="w-full sm:w-auto flex items-center"
+                >
+                  <LogOut className="mr-2 h-5 w-5" />
+                  Log Out
+                </Button>
+              )}
+            </div>
           </div>
-        ) : error ? (
-          <Alert variant="destructive">
-            <AlertTitle>Error</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-            <Button onClick={fetchData} variant="outline" className="mt-2">
-              Try Again
-            </Button>
-          </Alert>
-        ) : data ? (
-          <>
-            {data.note && (
-              <Alert className="mb-4">
-                <AlertDescription>{data.note}</AlertDescription>
-              </Alert>
-            )}
+        </CardHeader>
 
-            <div className="mb-6">
-              <h2 className="text-xl font-bold mb-3">Available Time Slots</h2>
-              {data.available_slots && data.available_slots.length > 0 ? (
-                <div className="space-y-4">
-                  {Object.entries(groupedSlots).map(([date, slots]) => (
-                    <div key={date} className="border rounded-lg p-3">
-                      <h3 className="font-medium mb-2">
-                        {new Date(date).toLocaleDateString("en-US", {
-                          weekday: "long",
-                          month: "long",
-                          day: "numeric",
-                        })}
-                      </h3>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                        {slots.map((slot) => {
-                          const slotDate = parseUtcToLocalDate(slot);
-                          return (
-                            <Button
-                              key={slot}
-                              variant={
-                                selectedSlot === slot ? "default" : "outline"
-                              }
-                              className="justify-start text-left h-auto py-2"
-                              onClick={() => handleSlotSelect(slot)}
+        <CardContent className="p-6">
+          {loading ? (
+            <div className="space-y-6">
+              <Skeleton className="h-10 w-64" />
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : error ? (
+            <Alert variant="destructive">
+              <AlertTitle>Error</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+              <Button onClick={fetchData} variant="outline" className="mt-4">
+                Try Again
+              </Button>
+            </Alert>
+          ) : data ? (
+            <>
+              {data.note && (
+                <Alert className="mb-6">
+                  <AlertDescription>{data.note}</AlertDescription>
+                </Alert>
+              )}
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-bold text-blue-800 flex items-center">
+                    <CalendarIcon className="mr-3 h-6 w-6 text-blue-600" />
+                    Available Time Slots
+                  </h2>
+
+                  {isAuthenticated && (
+                    <div className="flex items-center text-sm text-green-700 font-medium">
+                      <CalendarIcon className="mr-2 h-4 w-4 text-green-500" />
+                      Connected
+                    </div>
+                  )}
+                </div>
+
+                {data.available_slots && data.available_slots.length > 0 ? (
+                  <div className="space-y-3">
+                    {Object.entries(groupedSlots).map(([dateKey, slots]) => (
+                      <div
+                        key={dateKey}
+                        className="overflow-hidden border rounded-lg"
+                      >
+                        <div
+                          className={`flex items-center justify-between p-4 cursor-pointer transition-colors duration-300 ${
+                            expandedDays[dateKey]
+                              ? "bg-blue-50 border-blue-200"
+                              : "bg-white hover:bg-gray-50"
+                          }`}
+                          onClick={() => toggleDayExpansion(dateKey)}
+                        >
+                          <div className="flex items-center">
+                            <div className="transform transition-transform duration-300 ease-in-out mr-2">
+                              {expandedDays[dateKey] ? (
+                                <ChevronDown className="h-5 w-5 text-blue-600" />
+                              ) : (
+                                <ChevronRight className="h-5 w-5 text-gray-500" />
+                              )}
+                            </div>
+                            <h3
+                              className={`text-lg font-medium transition-colors duration-300 ${
+                                expandedDays[dateKey]
+                                  ? "text-blue-800"
+                                  : "text-gray-800"
+                              }`}
                             >
-                              <Clock className="mr-2 h-4 w-4" />
-                              {slotDate.toLocaleTimeString("en-US", {
-                                hour: "numeric",
-                                minute: "numeric",
+                              {new Date(dateKey).toLocaleDateString("en-US", {
+                                weekday: "long",
+                                month: "long",
+                                day: "numeric",
                               })}
-                            </Button>
-                          );
-                        })}
+                            </h3>
+                          </div>
+                          <div className="text-sm font-medium text-gray-500">
+                            {slots.length} available{" "}
+                            {slots.length === 1 ? "time" : "times"}
+                          </div>
+                        </div>
+
+                        <div
+                          className={cn(
+                            "grid grid-rows-[0fr] transition-[grid-template-rows] duration-300 ease-in-out",
+                            expandedDays[dateKey] && "grid-rows-[1fr]"
+                          )}
+                        >
+                          <div className="overflow-hidden">
+                            <div
+                              ref={(el) => {
+                                contentRefs.current[dateKey] = el;
+                              }}
+                              className="p-4 bg-white border-t border-gray-200"
+                            >
+                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                                {slots.map((slot) => {
+                                  const slotDate = parseUtcToLocalDate(slot);
+                                  return (
+                                    <Button
+                                      key={slot}
+                                      variant={
+                                        selectedSlot === slot
+                                          ? "default"
+                                          : "outline"
+                                      }
+                                      className={`flex items-center justify-start h-12 w-full text-left transition-all duration-200 ${
+                                        selectedSlot === slot
+                                          ? "ring-2 ring-blue-500"
+                                          : "hover:border-blue-300"
+                                      }`}
+                                      onClick={() => handleSlotSelect(slot)}
+                                    >
+                                      <Clock className="mr-2 h-4 w-4 flex-shrink-0" />
+                                      <span className="truncate">
+                                        {slotDate.toLocaleTimeString("en-US", {
+                                          hour: "numeric",
+                                          minute: "numeric",
+                                        })}
+                                      </span>
+                                    </Button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 border rounded-lg bg-gray-50">
+                    <CalendarIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-500 text-lg">
+                      No available slots found.
+                    </p>
+                  </div>
+                )}
+
+                {selectedSlot && (
+                  <div className="mt-8 pt-6 border-t border-gray-200 w-full">
+                    <h3 className="text-xl font-semibold mb-4 text-blue-800">
+                      Selected Time
+                    </h3>
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                      <div className="flex items-center text-blue-800">
+                        <Clock className="h-5 w-5 mr-2 text-blue-600" />
+                        <span className="font-medium">
+                          {formatDate(selectedSlot)}
+                        </span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-gray-500">No available slots found.</p>
-              )}
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold mb-2">AI Recommendations</h3>
-              {data.recommendations ? (
-                <div className="bg-gray-50 border rounded-md p-4 text-sm whitespace-pre-line">
-                  {data.recommendations}
-                </div>
-              ) : (
-                <p className="text-gray-500">No recommendations available.</p>
-              )}
-            </div>
-
-            {selectedSlot && (
-              <div className="mt-6 pt-4 border-t">
-                <h3 className="text-lg font-semibold mb-2">Selected Time</h3>
-                <Button className="w-full" onClick={openScheduleDialog}>
-                  Schedule Meeting for {formatDate(selectedSlot)}
-                </Button>
+                    <Button
+                      size="lg"
+                      className="w-full py-6 flex items-center justify-center bg-blue-600 hover:bg-blue-700 transition-colors duration-300"
+                      onClick={openScheduleDialog}
+                    >
+                      <CalendarIcon className="mr-3 h-5 w-5" />
+                      Schedule Meeting
+                    </Button>
+                  </div>
+                )}
               </div>
+            </>
+          ) : (
+            <div className="text-center py-12">
+              <p className="text-gray-500 text-lg">No data available.</p>
+            </div>
+          )}
+        </CardContent>
+
+        <CardFooter className="bg-gray-50 px-6 py-4 border-t">
+          <div className="w-full flex justify-between items-center">
+            <div>
+              {isAuthenticated ? (
+                <span className="flex items-center text-sm text-gray-600">
+                  Using your primary Google Calendar
+                </span>
+              ) : (
+                <span className="flex items-center text-sm text-gray-500">
+                  Connect your calendar to view available times
+                </span>
+              )}
+            </div>
+            {isAuthenticated && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={logoutFromGoogle}
+                className="text-gray-500 hover:text-gray-700 transition-colors duration-200"
+              >
+                <LogOut className="mr-1 h-3 w-3" />
+                Switch Account
+              </Button>
             )}
-          </>
-        ) : (
-          <p className="text-gray-500">No data available.</p>
-        )}
-      </CardContent>
+          </div>
+        </CardFooter>
+      </Card>
 
       <Dialog open={showScheduleDialog} onOpenChange={setShowScheduleDialog}>
-        <DialogContent>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Schedule New Event</DialogTitle>
+            <DialogTitle className="text-xl">Schedule New Event</DialogTitle>
             <DialogDescription>
-              Create a new event for{" "}
-              {selectedSlot ? formatDate(selectedSlot) : ""}
+              Create a calendar event for{" "}
+              <span className="font-medium">
+                {selectedSlot ? formatDate(selectedSlot) : ""}
+              </span>
             </DialogDescription>
           </DialogHeader>
 
@@ -360,58 +515,40 @@ export default function Scheduler() {
                 value={eventName}
                 onChange={(e) => setEventName(e.target.value)}
                 placeholder="Meeting with Team"
+                className="w-full"
               />
             </div>
 
             <div className="grid gap-2">
               <Label htmlFor="event-description">Description</Label>
-              <Input
+              <Textarea
                 id="event-description"
                 value={eventDescription}
                 onChange={(e) => setEventDescription(e.target.value)}
-                placeholder="Discuss project updates"
+                placeholder="Discuss project updates and next steps"
+                className="w-full min-h-[100px]"
               />
             </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="flex flex-col sm:flex-row gap-2">
             <Button
               variant="outline"
               onClick={() => setShowScheduleDialog(false)}
+              className="w-full sm:w-auto transition-colors duration-200"
             >
               Cancel
             </Button>
-            <Button onClick={scheduleEvent}>Schedule Event</Button>
+            <Button
+              onClick={scheduleEvent}
+              className="w-full sm:w-auto transition-colors duration-200"
+            >
+              <CalendarIcon className="mr-2 h-4 w-4" />
+              Schedule Event
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <CardFooter className="flex justify-between border-t pt-4 text-sm text-gray-500">
-        <div>
-          {isAuthenticated ? (
-            <span className="flex items-center">
-              <CalendarIcon className="mr-2 h-4 w-4 text-green-500" />
-              Connected to Google Calendar
-            </span>
-          ) : (
-            <span className="flex items-center">
-              <CalendarIcon className="mr-2 h-4 w-4 text-gray-400" />
-              Not connected to Google Calendar
-            </span>
-          )}
-        </div>
-        {isAuthenticated && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={logoutFromGoogle}
-            className="text-gray-500 hover:text-gray-700"
-          >
-            <LogOut className="mr-1 h-3 w-3" />
-            Switch Account
-          </Button>
-        )}
-      </CardFooter>
-    </Card>
+    </div>
   );
 }
