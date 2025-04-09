@@ -17,6 +17,7 @@ import {
   LogOut,
   ChevronDown,
   ChevronRight,
+  X,
 } from "lucide-react";
 import {
   Dialog,
@@ -29,7 +30,8 @@ import {
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Textarea } from "./ui/textarea";
-import { cn } from "../lib/utils"; // Make sure this import works
+import { cn } from "../lib/utils";
+import { Calendar } from "./ui/calendar";
 
 interface ScheduleData {
   available_slots: string[];
@@ -37,7 +39,6 @@ interface ScheduleData {
   note?: string;
 }
 
-// Add interface for API response when scheduling an event
 interface ScheduleEventResponse {
   status: string;
   event_id: string;
@@ -48,21 +49,23 @@ export default function Scheduler() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [showScheduleDialog, setShowScheduleDialog] = useState<boolean>(false);
   const [eventName, setEventName] = useState<string>("");
   const [eventDescription, setEventDescription] = useState<string>("");
   const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
-  // Fix the type for contentRefs
   const contentRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [isCalendarOpen, setIsCalendarOpen] = useState<boolean>(false);
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
+  const [usingRealData, setUsingRealData] = useState<boolean>(false);
+  const [dataLoading, setDataLoading] = useState<boolean>(true);
 
-  // Convert UTC ISO string to local date object
   const parseUtcToLocalDate = (isoString: string): Date => {
     const date = new Date(isoString);
     return date;
   };
 
-  // Format a date for display, properly handling timezone
   const formatDate = (dateString: string): string => {
     const date = parseUtcToLocalDate(dateString);
     return date.toLocaleString("en-US", {
@@ -74,7 +77,22 @@ export default function Scheduler() {
     });
   };
 
-  // Group slots by date considering local timezone
+  const formatDateOnly = (date: Date): string => {
+    return date.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+  };
+
+  const formatDateKey = (date: Date): string => {
+    return date.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  };
+
   const groupSlotsByDate = (): Record<string, string[]> => {
     if (!data?.available_slots) return {};
 
@@ -82,11 +100,7 @@ export default function Scheduler() {
 
     data.available_slots.forEach((slot) => {
       const date = parseUtcToLocalDate(slot);
-      const dateKey = date.toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
+      const dateKey = formatDateKey(date);
 
       if (!grouped[dateKey]) {
         grouped[dateKey] = [];
@@ -98,7 +112,27 @@ export default function Scheduler() {
     return grouped;
   };
 
-  // Toggle day expansion
+  const getDatesWithSlots = (): Date[] => {
+    if (!data?.available_slots) return [];
+
+    const uniqueDates = new Set<string>();
+    const dates: Date[] = [];
+
+    data.available_slots.forEach((slot) => {
+      const date = parseUtcToLocalDate(slot);
+      const dateKey = formatDateKey(date);
+
+      if (!uniqueDates.has(dateKey)) {
+        uniqueDates.add(dateKey);
+        dates.push(
+          new Date(date.getFullYear(), date.getMonth(), date.getDate())
+        );
+      }
+    });
+
+    return dates;
+  };
+
   const toggleDayExpansion = (dateKey: string): void => {
     setExpandedDays((prev) => ({
       ...prev,
@@ -112,15 +146,30 @@ export default function Scheduler() {
     const left = window.innerWidth / 2 - width / 2;
     const top = window.innerHeight / 2 - height / 2;
 
-    window.open(
+    // Store a reference to the popup
+    const authWindow = window.open(
       "http://localhost:8000/auth",
       "googleAuth",
       `width=${width},height=${height},top=${top},left=${left}`
     );
+
+    // Add polling to check if auth window is closed
+    const checkClosed = setInterval(() => {
+      if (authWindow?.closed) {
+        clearInterval(checkClosed);
+        checkAuthStatus().then(() => {
+          if (isAuthenticated) {
+            fetchData();
+          }
+        });
+        setAuthLoading(false);
+      }
+    }, 500);
   };
 
   const logoutFromGoogle = async (): Promise<void> => {
     try {
+      setLoading(true);
       const response = await fetch("http://localhost:8000/auth/logout", {
         method: "GET",
         credentials: "include",
@@ -129,14 +178,19 @@ export default function Scheduler() {
       if (response.ok) {
         setIsAuthenticated(false);
         setSelectedSlot(null);
-        fetchData();
+        setSelectedDate(null);
+        setData(null); // Clear data on logout
+        fetchData(); // Fetch fresh data
       }
     } catch (error) {
       console.error("Error logging out:", error);
+    } finally {
+      setLoading(false);
+      setAuthLoading(false);
     }
   };
 
-  const checkAuthStatus = async (): Promise<void> => {
+  const checkAuthStatus = async (): Promise<boolean> => {
     try {
       const response = await fetch("http://localhost:8000/auth/status", {
         credentials: "include",
@@ -144,15 +198,19 @@ export default function Scheduler() {
 
       if (response.ok) {
         const responseData = await response.json();
-        setIsAuthenticated(responseData.authenticated);
+        const isAuth = responseData.authenticated;
+        setIsAuthenticated(isAuth);
+        return isAuth;
       }
+      return false;
     } catch (error) {
       console.error("Error checking authentication status:", error);
+      return false;
     }
   };
 
   const fetchData = (): void => {
-    setLoading(true);
+    setDataLoading(true);
     setError(null);
 
     fetch("http://localhost:8000/schedule", {
@@ -166,12 +224,17 @@ export default function Scheduler() {
       })
       .then((responseData: ScheduleData) => {
         setData(responseData);
-        setLoading(false);
+        // Real data is being used if there's no note about mock data
+        // or if authenticated (and thus definitely using real data)
+        setUsingRealData(
+          isAuthenticated && !responseData.note?.includes("mock")
+        );
+        setDataLoading(false);
       })
       .catch((err: Error) => {
         console.error("Error fetching schedule data:", err);
         setError("Failed to load schedule data. Please try again later.");
-        setLoading(false);
+        setDataLoading(false);
       });
   };
 
@@ -181,8 +244,10 @@ export default function Scheduler() {
 
     const handleMessage = (event: MessageEvent): void => {
       if (event.data === "google-auth-success") {
-        checkAuthStatus();
-        fetchData();
+        checkAuthStatus().then(() => {
+          fetchData();
+          setAuthLoading(false);
+        });
       }
     };
 
@@ -190,20 +255,31 @@ export default function Scheduler() {
     return () => window.removeEventListener("message", handleMessage);
   }, []);
 
-  // Initialize expanded state for the first day when data loads
   useEffect(() => {
-    if (data?.available_slots?.length) {
-      const grouped = groupSlotsByDate();
-      const firstDay = Object.keys(grouped)[0];
-
-      if (firstDay) {
-        setExpandedDays((prev) => ({
-          ...prev,
-          [firstDay]: true,
-        }));
+    const refreshData = async () => {
+      setLoading(true);
+      try {
+        await fetchData();
+      } finally {
+        setLoading(false);
+        setAuthLoading(false); // Ensure auth loading ends
       }
+    };
+
+    refreshData();
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (selectedDate) {
+      const dateKey = formatDateKey(selectedDate);
+      setExpandedDays((prev) => ({
+        ...prev,
+        [dateKey]: true,
+      }));
+
+      setSelectedSlot(null);
     }
-  }, [data?.available_slots]);
+  }, [selectedDate]);
 
   const handleSlotSelect = (slot: string): void => {
     setSelectedSlot(slot);
@@ -213,8 +289,16 @@ export default function Scheduler() {
     }
   };
 
+  const handleDateSelect = (date: Date | undefined): void => {
+    if (date) {
+      setSelectedDate(date);
+      setIsCalendarOpen(false);
+    }
+  };
+
   const openScheduleDialog = (): void => {
     if (!isAuthenticated) {
+      setAuthLoading(true);
       connectWithGoogle();
       return;
     }
@@ -256,7 +340,40 @@ export default function Scheduler() {
     }
   };
 
-  const groupedSlots = groupSlotsByDate();
+  const hasAvailableSlots = (date: Date): boolean => {
+    // Disable calendar while loading or if using mock data right after auth
+    if (loading || dataLoading || (authLoading && !usingRealData)) {
+      return false;
+    }
+
+    const dateKey = formatDateKey(date);
+    const groupedSlots = groupSlotsByDate();
+
+    // If authenticated but no slots are returned yet, consider allowing weekdays
+    if (
+      isAuthenticated &&
+      usingRealData &&
+      (!data?.available_slots || data.available_slots.length === 0)
+    ) {
+      const isWeekday = date.getDay() > 0 && date.getDay() < 6;
+      const isInFutureRange =
+        date >= new Date() &&
+        date <= new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+      return isWeekday && isInFutureRange;
+    }
+
+    return !!groupedSlots[dateKey] && groupedSlots[dateKey].length > 0;
+  };
+
+  const getSlotsForSelectedDate = (): string[] => {
+    if (!selectedDate) return [];
+
+    const dateKey = formatDateKey(selectedDate);
+    const groupedSlots = groupSlotsByDate();
+    return groupedSlots[dateKey] || [];
+  };
+
+  const availableDates = getDatesWithSlots();
 
   return (
     <div className="container mx-auto max-w-4xl p-4">
@@ -265,7 +382,7 @@ export default function Scheduler() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 w-full">
             <div>
               <CardTitle className="text-3xl font-bold text-blue-900">
-                Calendar Scheduler
+                Nexus Events
               </CardTitle>
               <CardDescription className="text-lg text-blue-700 mt-1">
                 Find and schedule optimal meeting times
@@ -274,22 +391,48 @@ export default function Scheduler() {
             <div>
               {!isAuthenticated ? (
                 <Button
-                  onClick={connectWithGoogle}
+                  onClick={() => {
+                    setAuthLoading(true);
+                    connectWithGoogle();
+                  }}
                   size="lg"
                   className="w-full sm:w-auto flex items-center bg-blue-600 hover:bg-blue-700"
+                  disabled={authLoading}
                 >
-                  <LogIn className="mr-2 h-5 w-5" />
-                  Connect Calendar
+                  {authLoading ? (
+                    <>
+                      <span className="mr-2 h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                      Connecting...
+                    </>
+                  ) : (
+                    <>
+                      <LogIn className="mr-2 h-5 w-5" />
+                      Connect Calendar
+                    </>
+                  )}
                 </Button>
               ) : (
                 <Button
-                  onClick={logoutFromGoogle}
+                  onClick={() => {
+                    setAuthLoading(true);
+                    logoutFromGoogle();
+                  }}
                   size="lg"
                   variant="outline"
                   className="w-full sm:w-auto flex items-center"
+                  disabled={authLoading}
                 >
-                  <LogOut className="mr-2 h-5 w-5" />
-                  Log Out
+                  {authLoading ? (
+                    <>
+                      <span className="mr-2 h-5 w-5 animate-spin rounded-full border-2 border-gray-400 border-t-transparent"></span>
+                      Logging Out...
+                    </>
+                  ) : (
+                    <>
+                      <LogOut className="mr-2 h-5 w-5" />
+                      Log Out
+                    </>
+                  )}
                 </Button>
               )}
             </div>
@@ -312,7 +455,47 @@ export default function Scheduler() {
                 Try Again
               </Button>
             </Alert>
+          ) : !isAuthenticated ? (
+            // Show login prompt for unauthenticated users
+            <div className="text-center py-12 space-y-6">
+              <div className="mx-auto w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center">
+                <CalendarIcon className="h-10 w-10 text-blue-500" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold mb-2 text-gray-800">
+                  Connect Your Calendar
+                </h2>
+                <p className="text-gray-600 max-w-md mx-auto mb-6">
+                  To view available slots and schedule meetings, you need to
+                  connect your Google Calendar first.
+                </p>
+                <div className="flex justify-center">
+                  <Button
+                    onClick={() => {
+                      setAuthLoading(true);
+                      connectWithGoogle();
+                    }}
+                    size="lg"
+                    className="px-8 py-6 text-lg flex items-center bg-blue-600 hover:bg-blue-700"
+                    disabled={authLoading}
+                  >
+                    {authLoading ? (
+                      <>
+                        <span className="mr-2 h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                        Connecting...
+                      </>
+                    ) : (
+                      <>
+                        <LogIn className="mr-2 h-5 w-5" />
+                        Connect with Google Calendar
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
           ) : data ? (
+            // Content only shown to authenticated users
             <>
               {data.note && (
                 <Alert className="mb-6">
@@ -320,118 +503,125 @@ export default function Scheduler() {
                 </Alert>
               )}
 
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-bold text-blue-800 flex items-center">
-                    <CalendarIcon className="mr-3 h-6 w-6 text-blue-600" />
-                    Available Time Slots
-                  </h2>
+              <div className="space-y-6">
+                <div className="bg-white border rounded-lg p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-bold text-blue-800 flex items-center">
+                      <CalendarIcon className="mr-3 h-6 w-6 text-blue-600" />
+                      Step 1: Choose a Date
+                    </h2>
 
-                  {isAuthenticated && (
                     <div className="flex items-center text-sm text-green-700 font-medium">
                       <CalendarIcon className="mr-2 h-4 w-4 text-green-500" />
                       Connected
                     </div>
-                  )}
+                  </div>
+
+                  <div className="flex flex-col md:flex-row gap-4">
+                    <div className="w-full md:w-1/2">
+                      <div className="bg-gray-50 p-4 rounded-lg border">
+                        <h3 className="text-md font-medium mb-3">
+                          Select Available Date:
+                        </h3>
+                        <Calendar
+                          mode="single"
+                          selected={selectedDate || undefined}
+                          onSelect={handleDateSelect}
+                          disabled={(date) => !hasAvailableSlots(date)}
+                          initialFocus
+                          className="rounded-md border"
+                        />
+                      </div>
+
+                      {selectedDate && (
+                        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                          <h3 className="text-md font-medium text-blue-800 mb-2">
+                            Selected Date:
+                          </h3>
+                          <p className="flex items-center">
+                            <CalendarIcon className="mr-2 h-4 w-4 text-blue-600" />
+                            {formatDateOnly(selectedDate)}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="w-full md:w-1/2 bg-gray-50 p-4 rounded-lg border">
+                      <h3 className="text-md font-medium mb-2">
+                        Available Dates:
+                      </h3>
+                      <div className="max-h-48 overflow-y-auto space-y-2">
+                        {availableDates.length > 0 ? (
+                          availableDates.map((date, index) => (
+                            <Button
+                              key={date.toISOString()}
+                              variant={
+                                selectedDate &&
+                                formatDateKey(selectedDate) ===
+                                  formatDateKey(date)
+                                  ? "default"
+                                  : "outline"
+                              }
+                              className="w-full justify-start text-left flex items-center"
+                              onClick={() => setSelectedDate(date)}
+                            >
+                              <CalendarIcon className="mr-2 h-4 w-4" />
+                              {formatDateOnly(date)}
+                            </Button>
+                          ))
+                        ) : (
+                          <p className="text-gray-500 text-center py-4">
+                            No available dates found.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
-                {data.available_slots && data.available_slots.length > 0 ? (
-                  <div className="space-y-3">
-                    {Object.entries(groupedSlots).map(([dateKey, slots]) => (
-                      <div
-                        key={dateKey}
-                        className="overflow-hidden border rounded-lg"
-                      >
-                        <div
-                          className={`flex items-center justify-between p-4 cursor-pointer transition-colors duration-300 ${
-                            expandedDays[dateKey]
-                              ? "bg-blue-50 border-blue-200"
-                              : "bg-white hover:bg-gray-50"
-                          }`}
-                          onClick={() => toggleDayExpansion(dateKey)}
-                        >
-                          <div className="flex items-center">
-                            <div className="transform transition-transform duration-300 ease-in-out mr-2">
-                              {expandedDays[dateKey] ? (
-                                <ChevronDown className="h-5 w-5 text-blue-600" />
-                              ) : (
-                                <ChevronRight className="h-5 w-5 text-gray-500" />
-                              )}
-                            </div>
-                            <h3
-                              className={`text-lg font-medium transition-colors duration-300 ${
-                                expandedDays[dateKey]
-                                  ? "text-blue-800"
-                                  : "text-gray-800"
-                              }`}
-                            >
-                              {new Date(dateKey).toLocaleDateString("en-US", {
-                                weekday: "long",
-                                month: "long",
-                                day: "numeric",
-                              })}
-                            </h3>
-                          </div>
-                          <div className="text-sm font-medium text-gray-500">
-                            {slots.length} available{" "}
-                            {slots.length === 1 ? "time" : "times"}
-                          </div>
-                        </div>
+                {selectedDate && (
+                  <div className="bg-white border rounded-lg p-6 space-y-4">
+                    <h2 className="text-2xl font-bold text-blue-800 flex items-center">
+                      <Clock className="mr-3 h-6 w-6 text-blue-600" />
+                      Step 2: Choose a Time
+                    </h2>
 
-                        <div
-                          className={cn(
-                            "grid grid-rows-[0fr] transition-[grid-template-rows] duration-300 ease-in-out",
-                            expandedDays[dateKey] && "grid-rows-[1fr]"
-                          )}
-                        >
-                          <div className="overflow-hidden">
-                            <div
-                              ref={(el) => {
-                                contentRefs.current[dateKey] = el;
-                              }}
-                              className="p-4 bg-white border-t border-gray-200"
+                    {getSlotsForSelectedDate().length > 0 ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                        {getSlotsForSelectedDate().map((slot) => {
+                          const slotDate = parseUtcToLocalDate(slot);
+                          return (
+                            <Button
+                              key={slot}
+                              variant={
+                                selectedSlot === slot ? "default" : "outline"
+                              }
+                              className={`flex items-center justify-start h-12 w-full text-left transition-all duration-200 ${
+                                selectedSlot === slot
+                                  ? "ring-2 ring-blue-500"
+                                  : "hover:border-blue-300"
+                              }`}
+                              onClick={() => handleSlotSelect(slot)}
                             >
-                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                                {slots.map((slot) => {
-                                  const slotDate = parseUtcToLocalDate(slot);
-                                  return (
-                                    <Button
-                                      key={slot}
-                                      variant={
-                                        selectedSlot === slot
-                                          ? "default"
-                                          : "outline"
-                                      }
-                                      className={`flex items-center justify-start h-12 w-full text-left transition-all duration-200 ${
-                                        selectedSlot === slot
-                                          ? "ring-2 ring-blue-500"
-                                          : "hover:border-blue-300"
-                                      }`}
-                                      onClick={() => handleSlotSelect(slot)}
-                                    >
-                                      <Clock className="mr-2 h-4 w-4 flex-shrink-0" />
-                                      <span className="truncate">
-                                        {slotDate.toLocaleTimeString("en-US", {
-                                          hour: "numeric",
-                                          minute: "numeric",
-                                        })}
-                                      </span>
-                                    </Button>
-                                  );
+                              <Clock className="mr-2 h-4 w-4 flex-shrink-0" />
+                              <span className="truncate">
+                                {slotDate.toLocaleTimeString("en-US", {
+                                  hour: "numeric",
+                                  minute: "numeric",
                                 })}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
+                              </span>
+                            </Button>
+                          );
+                        })}
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-12 border rounded-lg bg-gray-50">
-                    <CalendarIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                    <p className="text-gray-500 text-lg">
-                      No available slots found.
-                    </p>
+                    ) : (
+                      <div className="text-center py-8 border rounded-lg bg-gray-50">
+                        <Clock className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                        <p className="text-gray-500">
+                          No time slots available for this date.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -468,18 +658,7 @@ export default function Scheduler() {
         </CardContent>
 
         <CardFooter className="bg-gray-50 px-6 py-4 border-t">
-          <div className="w-full flex justify-between items-center">
-            <div>
-              {isAuthenticated ? (
-                <span className="flex items-center text-sm text-gray-600">
-                  Using your primary Google Calendar
-                </span>
-              ) : (
-                <span className="flex items-center text-sm text-gray-500">
-                  Connect your calendar to view available times
-                </span>
-              )}
-            </div>
+          <div className="w-full flex justify-end items-center">
             {isAuthenticated && (
               <Button
                 variant="ghost"
