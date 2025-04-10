@@ -52,6 +52,9 @@ export default function Scheduler() {
   const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [usingRealData, setUsingRealData] = useState<boolean>(false);
   const [dataLoading, setDataLoading] = useState<boolean>(true);
+  const [nlCommand, setNlCommand] = useState<string>("");
+  const [nlProcessing, setNlProcessing] = useState<boolean>(false);
+  const [nlResult, setNlResult] = useState<any>(null);
 
   const parseUtcToLocalDate = (isoString: string): Date => {
     const date = new Date(isoString);
@@ -257,14 +260,26 @@ export default function Scheduler() {
   useEffect(() => {
     if (selectedDate) {
       const dateKey = formatDateKey(selectedDate);
+      console.log("Expanding date section for:", dateKey);
+
+      // Ensure the day is expanded
       setExpandedDays((prev) => ({
         ...prev,
         [dateKey]: true,
       }));
 
-      setSelectedSlot(null);
+      // If there's already a selectedSlot, make sure we scroll to it
+      if (selectedSlot) {
+        // Use setTimeout to ensure the UI has updated before attempting to scroll
+        setTimeout(() => {
+          const dateElement = contentRefs.current[dateKey];
+          if (dateElement) {
+            dateElement.scrollIntoView({ behavior: "smooth" });
+          }
+        }, 200);
+      }
     }
-  }, [selectedDate]);
+  }, [selectedDate, selectedSlot]);
 
   const handleSlotSelect = (slot: string): void => {
     setSelectedSlot(slot);
@@ -325,6 +340,72 @@ export default function Scheduler() {
     }
   };
 
+  const processNaturalLanguage = async (): Promise<void> => {
+    if (!nlCommand.trim() || !isAuthenticated) return;
+
+    try {
+      setNlProcessing(true);
+      const response = await fetch(
+        "http://localhost:8000/schedule/process-command",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            command: nlCommand,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to process command");
+      }
+
+      const result = await response.json();
+      setNlResult(result);
+
+      // If the AI found a specific date/time, pre-select it
+      if (result.found_slot) {
+        // Parse the slot time with proper timezone handling
+        const slotDate = new Date(result.found_slot);
+
+        // Set the selected date to midnight on the same day for proper date comparison
+        const dateOnly = new Date(
+          slotDate.getFullYear(),
+          slotDate.getMonth(),
+          slotDate.getDate()
+        );
+
+        // Debug log to verify the dates are being set correctly
+        console.log("Setting selected date:", dateOnly);
+        console.log("Setting selected slot:", result.found_slot);
+
+        setSelectedDate(dateOnly);
+        setSelectedSlot(result.found_slot);
+
+        // Pre-fill event details
+        setEventName(result.event_name || "");
+        setEventDescription(result.event_description || "");
+
+        // Open the dialog if we have complete information
+        if (result.event_name && result.found_slot) {
+          setTimeout(() => {
+            setShowScheduleDialog(true);
+          }, 100); // Small delay to ensure state updates before showing dialog
+        }
+      }
+    } catch (error) {
+      console.error("Error processing natural language command:", error);
+      setError(
+        "Failed to process your command. Please try again or use manual selection."
+      );
+    } finally {
+      setNlProcessing(false);
+    }
+  };
+
   const hasAvailableSlots = (date: Date): boolean => {
     // Disable calendar while loading or if using mock data right after auth
     if (loading || dataLoading || (authLoading && !usingRealData)) {
@@ -355,7 +436,14 @@ export default function Scheduler() {
 
     const dateKey = formatDateKey(selectedDate);
     const groupedSlots = groupSlotsByDate();
-    return groupedSlots[dateKey] || [];
+    const allSlots = groupedSlots[dateKey] || [];
+
+    // Filter slots to only include times between 9AM and 7PM
+    return allSlots.filter((slot) => {
+      const slotDate = parseUtcToLocalDate(slot);
+      const hours = slotDate.getHours();
+      return hours >= 9 && hours < 19; // 9AM to 7PM (19:00)
+    });
   };
 
   const availableDates = getDatesWithSlots();
@@ -425,6 +513,66 @@ export default function Scheduler() {
         </CardHeader>
 
         <CardContent className="p-6">
+          {isAuthenticated && (
+            <div className="mb-6 bg-blue-50 p-4 rounded-lg border border-blue-200">
+              <h2 className="text-lg font-medium text-blue-800 mb-3 flex items-center">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  className="mr-2 h-5 w-5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 9l3 3 5-5m-5 3V4m-1 12v4m10-10a8.5 8.5 0 11-17 0 8.5 8.5 0 0117 0z"
+                  />
+                </svg>
+                Quick AI Schedule
+              </h2>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={nlCommand}
+                  onChange={(e) => setNlCommand(e.target.value)}
+                  placeholder="Try: 'Schedule a BBQ party on Saturday at 3pm'"
+                  className="flex-1"
+                  onKeyDown={(e) =>
+                    e.key === "Enter" && processNaturalLanguage()
+                  }
+                />
+                <Button
+                  onClick={processNaturalLanguage}
+                  disabled={nlProcessing || !nlCommand.trim()}
+                  className="whitespace-nowrap"
+                >
+                  {nlProcessing ? (
+                    <>
+                      <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                      Processing...
+                    </>
+                  ) : (
+                    <>Schedule It</>
+                  )}
+                </Button>
+              </div>
+              {nlResult && (
+                <div className="mt-3 text-sm">
+                  <Alert
+                    className={
+                      nlResult.found_slot
+                        ? "bg-green-50 text-green-800 border-green-200"
+                        : "bg-yellow-50 text-yellow-800 border-yellow-200"
+                    }
+                  >
+                    <AlertDescription>{nlResult.message}</AlertDescription>
+                  </Alert>
+                </div>
+              )}
+            </div>
+          )}
+
           {loading ? (
             <div className="space-y-6">
               <Skeleton className="h-10 w-64" />
