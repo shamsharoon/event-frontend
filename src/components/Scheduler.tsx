@@ -81,30 +81,120 @@ export default function Scheduler() {
   };
 
   const formatDateKey = (date: Date): string => {
-    return date.toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+    // Create a simple consistent format for date comparison
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const dateKey = `${year}-${month}-${day}`;
+
+    // For weekends, debug log this
+    if (date.getDay() === 0 || date.getDay() === 6) {
+      console.log(
+        `[formatDateKey] Weekend date: ${dateKey}, day of week: ${date.getDay()}`
+      );
+    }
+
+    return dateKey;
   };
 
   const groupSlotsByDate = (): Record<string, string[]> => {
     if (!data?.available_slots) return {};
 
     const grouped: Record<string, string[]> = {};
+    const weekendSlots: string[] = [];
 
     data.available_slots.forEach((slot) => {
       const date = parseUtcToLocalDate(slot);
       const dateKey = formatDateKey(date);
+      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
 
       if (!grouped[dateKey]) {
         grouped[dateKey] = [];
       }
 
       grouped[dateKey].push(slot);
+
+      if (isWeekend) {
+        weekendSlots.push(slot);
+      }
     });
 
+    // Log weekend slots for debugging
+    if (weekendSlots.length > 0) {
+      console.log(
+        `[groupSlotsByDate] Found ${weekendSlots.length} weekend slots:`
+      );
+      weekendSlots.forEach((slot) => {
+        const date = parseUtcToLocalDate(slot);
+        console.log(
+          `Weekend slot: ${formatDate(slot)}, day of week: ${date.getDay()}`
+        );
+      });
+
+      // Also log the date keys that correspond to weekends
+      const weekendDateKeys = Object.keys(grouped).filter((dateKey) => {
+        // Parse using consistent format from formatDateKey
+        const parts = dateKey.split("-");
+        const year = parseInt(parts[0]);
+        const month = parseInt(parts[1]) - 1;
+        const day = parseInt(parts[2]);
+        const date = new Date(year, month, day);
+        return date.getDay() === 0 || date.getDay() === 6;
+      });
+
+      console.log(`Weekend date keys: ${JSON.stringify(weekendDateKeys)}`);
+    } else {
+      console.log(
+        "[groupSlotsByDate] No weekend slots found in available slots"
+      );
+    }
+
     return grouped;
+  };
+
+  // Add a function to ensure we get dates for the whole upcoming week
+  const ensureNextWeekDates = (dates: Date[]): Date[] => {
+    // If we don't have any dates returned, return an empty array
+    if (!data?.available_slots || data.available_slots.length === 0) {
+      return dates;
+    }
+
+    // Get today and next 7 days
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const existingDateKeys = new Set(dates.map((date) => formatDateKey(date)));
+    const allDates = [...dates];
+
+    // Add any missing days in the next 7 days
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(today);
+      date.setDate(today.getDate() + i);
+      const dateKey = formatDateKey(date);
+
+      // Skip if we already have this date
+      if (existingDateKeys.has(dateKey)) {
+        continue;
+      }
+
+      const slotsForThisDate = data.available_slots.filter((slot) => {
+        const slotDate = parseUtcToLocalDate(slot);
+        return formatDateKey(slotDate) === dateKey;
+      });
+
+      // Only add if there are actual slots for this date
+      if (slotsForThisDate.length > 0) {
+        allDates.push(date);
+        console.log(
+          `Added missing date: ${dateKey}, slots: ${slotsForThisDate.length}`
+        );
+      }
+    }
+
+    // Sort dates
+    allDates.sort((a, b) => a.getTime() - b.getTime());
+
+    return allDates;
   };
 
   const getDatesWithSlots = (): Date[] => {
@@ -112,20 +202,55 @@ export default function Scheduler() {
 
     const uniqueDates = new Set<string>();
     const dates: Date[] = [];
+    const weekendDates: Date[] = [];
+
+    console.log(
+      "Getting dates with slots from",
+      data.available_slots.length,
+      "available slots"
+    );
 
     data.available_slots.forEach((slot) => {
       const date = parseUtcToLocalDate(slot);
       const dateKey = formatDateKey(date);
+      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
 
       if (!uniqueDates.has(dateKey)) {
         uniqueDates.add(dateKey);
-        dates.push(
-          new Date(date.getFullYear(), date.getMonth(), date.getDate())
+        const newDate = new Date(
+          date.getFullYear(),
+          date.getMonth(),
+          date.getDate()
+        );
+        dates.push(newDate);
+
+        if (isWeekend) {
+          weekendDates.push(newDate);
+        }
+
+        // Debug each unique date we're adding to the calendar
+        console.log(
+          `Adding date: ${dateKey} - Day: ${date.getDay()} - Weekend: ${isWeekend}`
         );
       }
     });
 
-    return dates;
+    // Debug the final list of dates
+    console.log("Total unique dates with slots:", dates.length);
+
+    if (weekendDates.length > 0) {
+      console.log("Weekend dates found:", weekendDates.length);
+      weekendDates.forEach((date) => {
+        console.log(
+          `Weekend date: ${formatDateOnly(date)}, day: ${date.getDay()}`
+        );
+      });
+    } else {
+      console.log("No weekend dates found in the available slots");
+    }
+
+    // Ensure we get dates for the next week too
+    return ensureNextWeekDates(dates);
   };
 
   const connectWithGoogle = (): void => {
@@ -217,6 +342,73 @@ export default function Scheduler() {
         setUsingRealData(
           isAuthenticated && !responseData.note?.includes("mock")
         );
+
+        // Debug available slots including weekend dates
+        if (
+          responseData.available_slots &&
+          responseData.available_slots.length > 0
+        ) {
+          console.log(
+            "Total available slots:",
+            responseData.available_slots.length
+          );
+
+          // Group by day to see if weekends are included
+          const slotsGroupedByDay: Record<string, string[]> = {};
+
+          responseData.available_slots.forEach((slot) => {
+            const date = new Date(slot);
+            const day = date.getDay(); // 0 is Sunday, 6 is Saturday
+            const isWeekend = day === 0 || day === 6;
+            const dayName = [
+              "Sunday",
+              "Monday",
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Friday",
+              "Saturday",
+            ][day];
+            const dateStr = date.toISOString().split("T")[0];
+
+            if (!slotsGroupedByDay[dateStr]) {
+              slotsGroupedByDay[dateStr] = [];
+            }
+
+            slotsGroupedByDay[dateStr].push(slot);
+
+            // Log weekend slots specifically
+            if (isWeekend) {
+              console.log(
+                `Weekend slot found: ${dayName}, ${dateStr}, ${date.toLocaleTimeString()}`
+              );
+            }
+          });
+
+          // Log a summary of dates and their slot counts
+          console.log("Available dates summary:");
+          Object.entries(slotsGroupedByDay).forEach(([date, slots]) => {
+            const dayOfWeek = new Date(date).getDay();
+            const dayName = [
+              "Sunday",
+              "Monday",
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Friday",
+              "Saturday",
+            ][dayOfWeek];
+            const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+            console.log(
+              `${date} (${dayName})${isWeekend ? " - WEEKEND" : ""}: ${
+                slots.length
+              } slots`
+            );
+          });
+        } else {
+          console.log("No available slots returned from API");
+        }
+
         setDataLoading(false);
       })
       .catch((err: Error) => {
@@ -414,21 +606,36 @@ export default function Scheduler() {
 
     const dateKey = formatDateKey(date);
     const groupedSlots = groupSlotsByDate();
+    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+    const hasSlots =
+      !!groupedSlots[dateKey] && groupedSlots[dateKey].length > 0;
 
-    // If authenticated but no slots are returned yet, consider allowing weekdays
+    // Debug weekend dates in particular
+    if (isWeekend) {
+      console.log(
+        `[hasAvailableSlots] Weekend date: ${dateKey}, day: ${date.getDay()}, has slots: ${hasSlots}`
+      );
+      console.log(
+        `Slots found for this date: ${JSON.stringify(
+          groupedSlots[dateKey] || []
+        )}`
+      );
+    }
+
+    // If authenticated but no slots are returned yet, consider allowing all days
     if (
       isAuthenticated &&
       usingRealData &&
       (!data?.available_slots || data.available_slots.length === 0)
     ) {
-      const isWeekday = date.getDay() > 0 && date.getDay() < 6;
+      // Allow all days including weekends, as long as they're in the future range
       const isInFutureRange =
         date >= new Date() &&
         date <= new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-      return isWeekday && isInFutureRange;
+      return isInFutureRange;
     }
 
-    return !!groupedSlots[dateKey] && groupedSlots[dateKey].length > 0;
+    return hasSlots;
   };
 
   const getSlotsForSelectedDate = (): string[] => {
@@ -513,6 +720,36 @@ export default function Scheduler() {
         </CardHeader>
 
         <CardContent className="p-6">
+          {/* Debug section - can be removed in production */}
+          {data?.available_slots && (
+            <div className="bg-gray-50 p-4 rounded mb-4 text-xs overflow-auto max-h-40">
+              <h3 className="font-semibold mb-2">Slot Debugging Info:</h3>
+              <p>Has slots: {data.available_slots.length > 0 ? "Yes" : "No"}</p>
+              <p>Weekend dates available:</p>
+              <ul>
+                {data.available_slots
+                  .map((slot) => new Date(slot))
+                  .filter((date) => date.getDay() === 0 || date.getDay() === 6)
+                  .filter(
+                    (date, index, self) =>
+                      index ===
+                      self.findIndex(
+                        (d) =>
+                          d.getDate() === date.getDate() &&
+                          d.getMonth() === date.getMonth() &&
+                          d.getFullYear() === date.getFullYear()
+                      )
+                  )
+                  .map((date, i) => (
+                    <li key={i} className="ml-2">
+                      {date.toLocaleDateString()} (
+                      {date.getDay() === 0 ? "Sunday" : "Saturday"})
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+
           {isAuthenticated && (
             <div className="mb-6 bg-blue-50 p-4 rounded-lg border border-blue-200">
               <h2 className="text-lg font-medium text-blue-800 mb-3 flex items-center">
@@ -663,6 +900,19 @@ export default function Scheduler() {
                           disabled={(date) => !hasAvailableSlots(date)}
                           initialFocus
                           className="rounded-md border"
+                          disableNavigation={false}
+                          fromDate={new Date()}
+                          toDate={
+                            new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+                          }
+                          modifiers={{
+                            weekend: (date) =>
+                              date.getDay() === 0 || date.getDay() === 6,
+                          }}
+                          modifiersClassNames={{
+                            weekend: "bg-blue-50",
+                          }}
+                          showOutsideDays={true}
                         />
                       </div>
 
@@ -685,23 +935,36 @@ export default function Scheduler() {
                       </h3>
                       <div className="max-h-48 overflow-y-auto space-y-2">
                         {availableDates.length > 0 ? (
-                          availableDates.map((date, index) => (
-                            <Button
-                              key={date.toISOString()}
-                              variant={
-                                selectedDate &&
-                                formatDateKey(selectedDate) ===
-                                  formatDateKey(date)
-                                  ? "default"
-                                  : "outline"
-                              }
-                              className="w-full justify-start text-left flex items-center"
-                              onClick={() => setSelectedDate(date)}
-                            >
-                              <CalendarIcon className="mr-2 h-4 w-4" />
-                              {formatDateOnly(date)}
-                            </Button>
-                          ))
+                          availableDates.map((date, index) => {
+                            const isWeekend =
+                              date.getDay() === 0 || date.getDay() === 6;
+                            return (
+                              <Button
+                                key={date.toISOString()}
+                                variant={
+                                  selectedDate &&
+                                  formatDateKey(selectedDate) ===
+                                    formatDateKey(date)
+                                    ? "default"
+                                    : "outline"
+                                }
+                                className={`w-full justify-start text-left flex items-center ${
+                                  isWeekend
+                                    ? "bg-blue-50 hover:bg-blue-100"
+                                    : ""
+                                }`}
+                                onClick={() => setSelectedDate(date)}
+                              >
+                                <CalendarIcon className="mr-2 h-4 w-4" />
+                                {formatDateOnly(date)}
+                                {isWeekend && (
+                                  <span className="ml-auto text-xs font-medium text-blue-600 bg-blue-100 px-2 py-1 rounded">
+                                    Weekend
+                                  </span>
+                                )}
+                              </Button>
+                            );
+                          })
                         ) : (
                           <p className="text-gray-500 text-center py-4">
                             No available dates found.
@@ -723,6 +986,8 @@ export default function Scheduler() {
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                         {getSlotsForSelectedDate().map((slot) => {
                           const slotDate = parseUtcToLocalDate(slot);
+                          const isWeekend =
+                            slotDate.getDay() === 0 || slotDate.getDay() === 6;
                           return (
                             <Button
                               key={slot}
@@ -733,6 +998,8 @@ export default function Scheduler() {
                                 selectedSlot === slot
                                   ? "ring-2 ring-blue-500"
                                   : "hover:border-blue-300"
+                              } ${
+                                isWeekend ? "bg-blue-50 hover:bg-blue-100" : ""
                               }`}
                               onClick={() => handleSlotSelect(slot)}
                             >
@@ -743,6 +1010,11 @@ export default function Scheduler() {
                                   minute: "numeric",
                                 })}
                               </span>
+                              {isWeekend && (
+                                <span className="ml-auto text-xs font-medium text-blue-600 bg-blue-100 px-1 py-0.5 rounded">
+                                  {slotDate.getDay() === 0 ? "Sun" : "Sat"}
+                                </span>
+                              )}
                             </Button>
                           );
                         })}
