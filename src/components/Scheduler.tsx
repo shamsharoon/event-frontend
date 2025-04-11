@@ -197,11 +197,16 @@ export default function Scheduler() {
     }
   };
 
-  const fetchData = (): void => {
+  const fetchData = (date?: Date): void => {
     setDataLoading(true);
     setError(null);
 
-    fetch("http://localhost:8000/schedule", {
+    // If a specific date is selected, fetch only that date's data
+    const url = date
+      ? `http://localhost:8000/schedule?selected_date=${date.toISOString()}`
+      : "http://localhost:8000/schedule";
+
+    fetch(url, {
       credentials: "include",
     })
       .then((res) => {
@@ -212,15 +217,12 @@ export default function Scheduler() {
       })
       .then((responseData: ScheduleData) => {
         setData(responseData);
-        // Real data is being used if there's no note about mock data
-        // or if authenticated (and thus definitely using real data)
         setUsingRealData(
           isAuthenticated && !responseData.note?.includes("mock")
         );
         setDataLoading(false);
       })
       .catch((err: Error) => {
-        console.error("Error fetching schedule data:", err);
         setError("Failed to load schedule data. Please try again later.");
         setDataLoading(false);
       });
@@ -293,6 +295,8 @@ export default function Scheduler() {
     if (date) {
       setSelectedDate(date);
       setIsCalendarOpen(false);
+      // Fetch data for the selected date
+      fetchData(date);
     }
   };
 
@@ -424,7 +428,7 @@ export default function Scheduler() {
       // Allow all days including weekends, as long as they're in the future range
       const isInFutureRange =
         date >= new Date() &&
-        date <= new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+        date <= new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // Changed from 14 to 5 days
       return isInFutureRange;
     }
 
