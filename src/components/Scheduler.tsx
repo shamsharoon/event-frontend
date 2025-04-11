@@ -57,8 +57,15 @@ export default function Scheduler() {
   const [nlResult, setNlResult] = useState<any>(null);
 
   const parseUtcToLocalDate = (isoString: string): Date => {
-    const date = new Date(isoString);
-    return date;
+    // Create date object directly without automatic timezone conversion
+    // This preserves the hours as they appear in the ISO string
+    const [datePart, timePart] = isoString.split("T");
+    const [year, month, day] = datePart.split("-").map(Number);
+    const [hourStr, minuteStr] = timePart.split(":");
+    const hour = parseInt(hourStr, 10);
+    const minute = parseInt(minuteStr, 10);
+
+    return new Date(year, month - 1, day, hour, minute);
   };
 
   const formatDate = (dateString: string): string => {
@@ -372,22 +379,19 @@ export default function Scheduler() {
 
       // If the AI found a specific date/time, pre-select it
       if (result.found_slot) {
-        // Parse the slot time with proper timezone handling
-        const slotDate = new Date(result.found_slot);
+        // Don't parse with timezone - use the date string directly
+        const slotString = result.found_slot;
 
-        // Set the selected date to midnight on the same day for proper date comparison
-        const dateOnly = new Date(
-          slotDate.getFullYear(),
-          slotDate.getMonth(),
-          slotDate.getDate()
-        );
+        // Extract just the date part (YYYY-MM-DD) from the ISO string
+        const datePart = slotString.split("T")[0];
+        const [year, month, day] = datePart.split("-").map(Number);
 
-        // Debug log to verify the dates are being set correctly
-        console.log("Setting selected date:", dateOnly);
-        console.log("Setting selected slot:", result.found_slot);
+        // Create date object set to midnight on that day (without timezone adjustment)
+        const dateOnly = new Date(year, month - 1, day); // month is 0-indexed
 
+        // Pre-select the slot and date
         setSelectedDate(dateOnly);
-        setSelectedSlot(result.found_slot);
+        setSelectedSlot(slotString);
 
         // Pre-fill event details
         setEventName(result.event_name || "");
