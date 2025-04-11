@@ -588,7 +588,11 @@ export default function Scheduler() {
             <Alert variant="destructive">
               <AlertTitle>Error</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
-              <Button onClick={fetchData} variant="outline" className="mt-4">
+              <Button
+                onClick={() => fetchData()}
+                variant="outline"
+                className="mt-4"
+              >
                 Try Again
               </Button>
             </Alert>
