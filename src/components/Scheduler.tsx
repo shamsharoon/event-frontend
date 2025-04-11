@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, memo, useMemo, useCallback } from "react";
 import { Button } from "./ui/button";
 import {
   Card,
@@ -134,6 +134,37 @@ export default function Scheduler() {
 
     return dates;
   };
+
+  const getSlotsForSelectedDate = (): string[] => {
+    if (!selectedDate) return [];
+
+    const dateKey = formatDateKey(selectedDate);
+    const groupedSlots = groupSlotsByDate();
+    const allSlots = groupedSlots[dateKey] || [];
+
+    // Filter slots to only include times between 9AM and 7PM
+    return allSlots.filter((slot) => {
+      const slotDate = parseUtcToLocalDate(slot);
+      const hours = slotDate.getHours();
+      return hours >= 9 && hours < 19; // 9AM to 7PM (19:00)
+    });
+  };
+
+  // Now after all the functions are defined, we can memoize their results
+  const groupedSlotsData = useMemo(
+    () => groupSlotsByDate(),
+    [data?.available_slots]
+  );
+
+  const availableDates = useMemo(
+    () => getDatesWithSlots(),
+    [data?.available_slots]
+  );
+
+  const slotsForSelectedDate = useMemo(
+    () => getSlotsForSelectedDate(),
+    [selectedDate, data?.available_slots]
+  );
 
   const connectWithGoogle = (): void => {
     const width = 600;
@@ -290,22 +321,26 @@ export default function Scheduler() {
     }
   }, [selectedDate, selectedSlot]);
 
-  const handleSlotSelect = (slot: string): void => {
-    setSelectedSlot(slot);
+  // Memoize handlers
+  const handleSlotSelect = useCallback(
+    (slot: string): void => {
+      setSelectedSlot(slot);
 
-    if (isAuthenticated) {
-      setShowScheduleDialog(true);
-    }
-  };
+      if (isAuthenticated) {
+        setShowScheduleDialog(true);
+      }
+    },
+    [isAuthenticated]
+  );
 
-  const handleDateSelect = (date: Date | undefined): void => {
+  const handleDateSelect = useCallback((date: Date | undefined): void => {
     if (date) {
       setSelectedDate(date);
       setIsCalendarOpen(false);
       // Fetch data for the selected date
       fetchData(date);
     }
-  };
+  }, []);
 
   const openScheduleDialog = (): void => {
     if (!isAuthenticated) {
@@ -421,7 +456,9 @@ export default function Scheduler() {
     }
 
     const dateKey = formatDateKey(date);
-    const groupedSlots = groupSlotsByDate();
+
+    // Use the memoized groupedSlotsData instead of calling groupSlotsByDate() again
+    // This prevents unnecessary recalculations
 
     // If authenticated but no slots are returned yet, consider allowing all days
     if (
@@ -436,25 +473,63 @@ export default function Scheduler() {
       return isInFutureRange;
     }
 
-    return !!groupedSlots[dateKey] && groupedSlots[dateKey].length > 0;
+    return !!groupedSlotsData[dateKey] && groupedSlotsData[dateKey].length > 0;
   };
 
-  const getSlotsForSelectedDate = (): string[] => {
-    if (!selectedDate) return [];
-
-    const dateKey = formatDateKey(selectedDate);
-    const groupedSlots = groupSlotsByDate();
-    const allSlots = groupedSlots[dateKey] || [];
-
-    // Filter slots to only include times between 9AM and 7PM
-    return allSlots.filter((slot) => {
+  // Create a memoized TimeSlot component
+  const TimeSlot = memo(
+    ({
+      slot,
+      isSelected,
+      onSelect,
+    }: {
+      slot: string;
+      isSelected: boolean;
+      onSelect: (slot: string) => void;
+    }) => {
       const slotDate = parseUtcToLocalDate(slot);
-      const hours = slotDate.getHours();
-      return hours >= 9 && hours < 19; // 9AM to 7PM (19:00)
-    });
-  };
 
-  const availableDates = getDatesWithSlots();
+      return (
+        <Button
+          variant={isSelected ? "default" : "outline"}
+          className={`flex items-center justify-start h-12 w-full text-left transition-all duration-200 ${
+            isSelected ? "ring-2 ring-blue-500" : "hover:border-blue-300"
+          }`}
+          onClick={() => onSelect(slot)}
+        >
+          <Clock className="mr-2 h-4 w-4 flex-shrink-0" />
+          <span className="truncate">
+            {slotDate.toLocaleTimeString("en-US", {
+              hour: "numeric",
+              minute: "numeric",
+            })}
+          </span>
+        </Button>
+      );
+    }
+  );
+
+  // Create a memoized DateButton component
+  const DateButton = memo(
+    ({
+      date,
+      isSelected,
+      onClick,
+    }: {
+      date: Date;
+      isSelected: boolean; // Must be a boolean
+      onClick: () => void;
+    }) => (
+      <Button
+        variant={isSelected ? "default" : "outline"}
+        className="w-full justify-start text-left flex items-center"
+        onClick={onClick}
+      >
+        <CalendarIcon className="mr-2 h-4 w-4" />
+        {formatDateOnly(date)}
+      </Button>
+    )
+  );
 
   return (
     <div className="container mx-auto max-w-4xl p-4">
@@ -697,22 +772,17 @@ export default function Scheduler() {
                       </h3>
                       <div className="max-h-48 overflow-y-auto space-y-2">
                         {availableDates.length > 0 ? (
-                          availableDates.map((date, index) => (
-                            <Button
+                          availableDates.map((date) => (
+                            <DateButton
                               key={date.toISOString()}
-                              variant={
+                              date={date}
+                              isSelected={Boolean(
                                 selectedDate &&
-                                formatDateKey(selectedDate) ===
-                                  formatDateKey(date)
-                                  ? "default"
-                                  : "outline"
-                              }
-                              className="w-full justify-start text-left flex items-center"
+                                  formatDateKey(selectedDate) ===
+                                    formatDateKey(date)
+                              )}
                               onClick={() => setSelectedDate(date)}
-                            >
-                              <CalendarIcon className="mr-2 h-4 w-4" />
-                              {formatDateOnly(date)}
-                            </Button>
+                            />
                           ))
                         ) : (
                           <p className="text-gray-500 text-center py-4">
@@ -733,31 +803,14 @@ export default function Scheduler() {
 
                     {getSlotsForSelectedDate().length > 0 ? (
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                        {getSlotsForSelectedDate().map((slot) => {
-                          const slotDate = parseUtcToLocalDate(slot);
-                          return (
-                            <Button
-                              key={slot}
-                              variant={
-                                selectedSlot === slot ? "default" : "outline"
-                              }
-                              className={`flex items-center justify-start h-12 w-full text-left transition-all duration-200 ${
-                                selectedSlot === slot
-                                  ? "ring-2 ring-blue-500"
-                                  : "hover:border-blue-300"
-                              }`}
-                              onClick={() => handleSlotSelect(slot)}
-                            >
-                              <Clock className="mr-2 h-4 w-4 flex-shrink-0" />
-                              <span className="truncate">
-                                {slotDate.toLocaleTimeString("en-US", {
-                                  hour: "numeric",
-                                  minute: "numeric",
-                                })}
-                              </span>
-                            </Button>
-                          );
-                        })}
+                        {slotsForSelectedDate.map((slot) => (
+                          <TimeSlot
+                            key={slot}
+                            slot={slot}
+                            isSelected={selectedSlot === slot}
+                            onSelect={handleSlotSelect}
+                          />
+                        ))}
                       </div>
                     ) : (
                       <div className="text-center py-8 border rounded-lg bg-gray-50">
